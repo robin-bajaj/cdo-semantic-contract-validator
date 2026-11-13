@@ -1,0 +1,15 @@
+# CDO-owned contract registry (custom schema; not a native dbt resource).
+# Each independent dbt project uses its own manifest and declares
+# config.meta.semantic_contract.implements: cdo.position on its model(s).
+name: cdo.position
+version: 1
+
+required_columns:
+  position_id: text
+  report_date: date
+  profit_loss: numeric
+  instrument_code: integer
+
+# Declared manifest columns are checked here. Physical database enforcement
+# should be tested separately with dbt build / native model contracts.
+require_native_contract: false
