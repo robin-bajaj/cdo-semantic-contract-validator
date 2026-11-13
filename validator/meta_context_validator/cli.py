@@ -8,6 +8,7 @@ import click
 import yaml
 
 from .rules import validate_metric
+from .contract_rules import validate_cdo_contract
 
 
 def _find_yaml_files(path: Path) -> list[Path]:
@@ -37,6 +38,19 @@ def _extract_metrics(yaml_content: dict) -> list[tuple[str, dict]]:
             elif metric_meta.get("last_validated"):
                 merged["last_validated"] = metric_meta["last_validated"]
             results.append((name, merged))
+
+    # Support embedded dbt metrics: models[].metrics[]
+    for model in models:
+        for metric in model.get("metrics", []):
+            name = metric.get("name", "unknown")
+
+            meta = (
+                metric.get("config", {}).get("meta")
+                or metric.get("meta", {})
+            )
+
+            results.append((name, meta))
+
     # Also handle top-level metrics blocks
     for metric in yaml_content.get("metrics", []):
         name = metric.get("name", "unknown")
@@ -52,15 +66,101 @@ def main():
 
 @main.command()
 @click.argument("path", type=click.Path(exists=True))
-@click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text")
-@click.option("--errors-only", is_flag=True, help="Only show errors and false-confidence risks")
-def validate(path: str, output_format: str, errors_only: bool):
-    """Validate meta context blocks in dbt semantic model YAML files."""
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+)
+@click.option(
+    "--errors-only",
+    is_flag=True,
+    help="Only show errors and false-confidence risks",
+)
+@click.option(
+    "--contracts",
+    "contracts_path",
+    type=click.Path(
+        exists=True,
+        dir_okay=False,
+        path_type=Path,
+    ),
+    default=None,
+    help="Path to the CDO semantic contract YAML.",
+)
+@click.option(
+    "--manifest",
+    "manifest_path",
+    type=click.Path(
+        exists=True,
+        dir_okay=False,
+        path_type=Path,
+    ),
+    default=None,
+    help="Path to dbt manifest.json.",
+)
+def validate(
+    path,
+    output_format,
+    errors_only,
+    contracts_path,
+    manifest_path,
+):
+    """Validate Meta:Context and optional CDO contracts."""
     target = Path(path)
     yaml_files = _find_yaml_files(target)
 
     all_results = []
     exit_code = 0
+
+    contract_errors = []
+    contract_name = None
+
+    if (contracts_path is None) != (manifest_path is None):
+        raise click.UsageError(
+            "--contracts and --manifest must be provided together."
+        )
+
+    if contracts_path is not None:
+        try:
+            contract = yaml.safe_load(
+                contracts_path.read_text()
+            )
+
+            manifest = json.loads(
+                manifest_path.read_text()
+            )
+
+            if not isinstance(contract, dict):
+                raise ValueError(
+                    "CDO contract must be a YAML mapping"
+                )
+
+            if not isinstance(manifest, dict):
+                raise ValueError(
+                    "Manifest must be a JSON object"
+                )
+
+            contract_name = contract.get("name", "unknown")
+
+            contract_errors = validate_cdo_contract(
+                manifest,
+                contract,
+            )
+
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            KeyError,
+            yaml.YAMLError,
+        ) as exc:
+            raise click.ClickException(
+                f"CDO validation failed: {exc}"
+            ) from exc
+
+        if contract_errors:
+            exit_code = max(exit_code, 1)
 
     for yaml_file in yaml_files:
         try:
@@ -101,6 +201,14 @@ def validate(path: str, output_format: str, errors_only: bool):
                     ],
                 })
             output.append(file_json)
+        if contract_name is not None:
+            output.append({
+                "cdo_contract": {
+                    "name": contract_name,
+                    "status": "FAIL" if contract_errors else "PASS",
+                    "errors": contract_errors,
+                }
+            })
         click.echo(json.dumps(output, indent=2))
     else:
         for file_data in all_results:
@@ -116,6 +224,17 @@ def validate(path: str, output_format: str, errors_only: bool):
                         continue
                     symbol = {"error": "✗", "warning": "⚠", "info": "·"}.get(finding.level, " ")
                     click.echo(f"    {symbol} {finding.message}")
+
+        if contract_name is not None:
+            click.echo("\nCDO SEMANTIC CONTRACT VALIDATION")
+            click.echo(f"  Contract: {contract_name}")
+
+            if contract_errors:
+                click.echo("  FAIL")
+                for error in contract_errors:
+                    click.echo(f"    ✗ {error}")
+            else:
+                click.echo("  PASS")
 
         # Summary
         total = sum(len(fd["metrics"]) for fd in all_results)
