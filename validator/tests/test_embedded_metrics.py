@@ -32,3 +32,25 @@ def test_embedded_metric_extraction():
 
     assert name == "enterprise_total_profit"
     assert meta["context"]["owner"] == "CDO"
+
+def test_top_level_metric_config_meta_extraction():
+    yaml_content = {
+        "version": 2,
+        "metrics": [
+            {
+                "name": "enterprise_total_profit_loss",
+                "config": {
+                    "meta": {
+                        "context": {
+                            "owner": "CDO",
+                            "purpose": "Governed enterprise profit",
+                        }
+                    }
+                },
+            }
+        ],
+    }
+    metrics = _extract_metrics(yaml_content)
+    assert len(metrics) == 1
+    assert metrics[0][0] == "enterprise_total_profit_loss"
+    assert metrics[0][1]["context"]["owner"] == "CDO"
