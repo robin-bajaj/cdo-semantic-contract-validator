@@ -54,7 +54,8 @@ def _extract_metrics(yaml_content: dict) -> list[tuple[str, dict]]:
     # Also handle top-level metrics blocks
     for metric in yaml_content.get("metrics", []):
         name = metric.get("name", "unknown")
-        meta = metric.get("meta", {})
+        # Current dbt stores custom metric metadata under config.meta.
+        meta = metric.get("config", {}).get("meta") or metric.get("meta", {})
         results.append((name, meta))
     return results
 
